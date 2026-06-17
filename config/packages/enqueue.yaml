@@ -1,6 +1,17 @@
 enqueue:
     default:
-        transport: '%env(resolve:DATABASE_URL)%'
+        transport:
+            dsn: 'mysql:'
+            connection_factory_class: App\Queue\DbalConnectionFactory
+            connection:
+                driver: pdo_mysql
+                host: '%env(resolve:ENQUEUE_DB_HOST)%'
+                port: '%env(int:ENQUEUE_DB_PORT)%'
+                dbname: '%env(resolve:ENQUEUE_DB_NAME)%'
+                user: '%env(resolve:ENQUEUE_DB_USER)%'
+                password: '%env(resolve:ENQUEUE_DB_PASSWORD)%'
+                charset: utf8mb4
+                serverVersion: '%env(resolve:ENQUEUE_DB_SERVER_VERSION)%'
         client: null
         extensions:
             doctrine_clear_identity_map_extension: true

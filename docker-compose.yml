@@ -1,0 +1,255 @@
+services:
+    popcorn-server-app:
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        image: popcorn-server/php:8.2
+        depends_on:
+            popcorn-server-setup:
+                condition: service_completed_successfully
+            popcorn-server-redis:
+                condition: service_healthy
+            popcorn-server-elasticsearch:
+                condition: service_healthy
+            popcorn-server-tor:
+                condition: service_started
+        environment:
+            APP_ENV: dev
+            APP_SECRET: ${APP_SECRET:-local-docker-popcorn-server-secret}
+            DATABASE_URL: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ELASTICSEARCH_URL: "http://popcorn-server-elasticsearch:9200/"
+            ENQUEUE_DSN: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ENQUEUE_DB_HOST: popcorn-server-mariadb
+            ENQUEUE_DB_PORT: 3306
+            ENQUEUE_DB_NAME: popcorn
+            ENQUEUE_DB_USER: popcorn
+            ENQUEUE_DB_PASSWORD: popcorn
+            ENQUEUE_DB_SERVER_VERSION: 10.11.8-MariaDB
+            PROM_METRICS_DSN: "redis://popcorn-server-redis:6379"
+            TOR_PROXY: "socks5h://popcorn-server-tor:9050"
+            TMDB_API_KEY: ${TMDB_API_KEY:-}
+            TRAKT_KEY: ${TRAKT_KEY:-}
+            SENTRY_DSN: ${SENTRY_DSN:-}
+        volumes:
+            - .:/app
+            - popcorn-server-vendor:/app/vendor
+            - popcorn-server-var:/app/var
+        networks:
+            - popcorn-server
+
+    popcorn-server-setup:
+        image: popcorn-server/php:8.2
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        depends_on:
+            popcorn-server-mariadb:
+                condition: service_healthy
+            popcorn-server-elasticsearch:
+                condition: service_healthy
+            popcorn-server-redis:
+                condition: service_healthy
+        restart: "no"
+        environment:
+            APP_ENV: dev
+            APP_SECRET: ${APP_SECRET:-local-docker-popcorn-server-secret}
+            DATABASE_URL: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ELASTICSEARCH_URL: "http://popcorn-server-elasticsearch:9200/"
+            ENQUEUE_DSN: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ENQUEUE_DB_HOST: popcorn-server-mariadb
+            ENQUEUE_DB_PORT: 3306
+            ENQUEUE_DB_NAME: popcorn
+            ENQUEUE_DB_USER: popcorn
+            ENQUEUE_DB_PASSWORD: popcorn
+            ENQUEUE_DB_SERVER_VERSION: 10.11.8-MariaDB
+            PROM_METRICS_DSN: "redis://popcorn-server-redis:6379"
+            TOR_PROXY: "socks5h://popcorn-server-tor:9050"
+            TMDB_API_KEY: ${TMDB_API_KEY:-}
+            TRAKT_KEY: ${TRAKT_KEY:-}
+            SENTRY_DSN: ${SENTRY_DSN:-}
+        command:
+            - sh
+            - -lc
+            - >
+                php bin/console doctrine:database:create --if-not-exists &&
+                php bin/console doctrine:schema:update --force &&
+                php bin/console enqueue:setup-broker
+        volumes:
+            - .:/app
+            - popcorn-server-vendor:/app/vendor
+            - popcorn-server-var:/app/var
+        networks:
+            - popcorn-server
+
+    popcorn-server-nginx:
+        image: nginx:1.27-alpine
+        depends_on:
+            popcorn-server-app:
+                condition: service_started
+        ports:
+            - "${POPCORN_SERVER_HTTP_PORT:-18080}:80"
+        volumes:
+            - .:/app:ro
+            - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+        networks:
+            - popcorn-server
+
+    popcorn-server-worker:
+        image: popcorn-server/php:8.2
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        depends_on:
+            popcorn-server-setup:
+                condition: service_completed_successfully
+            popcorn-server-tor:
+                condition: service_started
+        command:
+            - php
+            - bin/console
+            - enqueue:consume
+            - -vvv
+            - --logger=stdout
+        environment:
+            APP_ENV: dev
+            APP_SECRET: ${APP_SECRET:-local-docker-popcorn-server-secret}
+            DATABASE_URL: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ELASTICSEARCH_URL: "http://popcorn-server-elasticsearch:9200/"
+            ENQUEUE_DSN: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ENQUEUE_DB_HOST: popcorn-server-mariadb
+            ENQUEUE_DB_PORT: 3306
+            ENQUEUE_DB_NAME: popcorn
+            ENQUEUE_DB_USER: popcorn
+            ENQUEUE_DB_PASSWORD: popcorn
+            ENQUEUE_DB_SERVER_VERSION: 10.11.8-MariaDB
+            PROM_METRICS_DSN: "redis://popcorn-server-redis:6379"
+            TOR_PROXY: "socks5h://popcorn-server-tor:9050"
+            TMDB_API_KEY: ${TMDB_API_KEY:-}
+            TRAKT_KEY: ${TRAKT_KEY:-}
+            SENTRY_DSN: ${SENTRY_DSN:-}
+        volumes:
+            - .:/app
+            - popcorn-server-vendor:/app/vendor
+            - popcorn-server-var:/app/var
+        networks:
+            - popcorn-server
+
+    popcorn-server-scheduler:
+        image: popcorn-server/php:8.2
+        build:
+            context: .
+            dockerfile: docker/php/Dockerfile
+        depends_on:
+            popcorn-server-setup:
+                condition: service_completed_successfully
+            popcorn-server-tor:
+                condition: service_started
+        entrypoint: ["/usr/local/bin/popcorn-server-cron-entrypoint"]
+        environment:
+            APP_ENV: dev
+            APP_SECRET: ${APP_SECRET:-local-docker-popcorn-server-secret}
+            DATABASE_URL: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ELASTICSEARCH_URL: "http://popcorn-server-elasticsearch:9200/"
+            ENQUEUE_DSN: "mysql://popcorn:popcorn@popcorn-server-mariadb:3306/popcorn?serverVersion=10.11.8-MariaDB&charset=utf8mb4"
+            ENQUEUE_DB_HOST: popcorn-server-mariadb
+            ENQUEUE_DB_PORT: 3306
+            ENQUEUE_DB_NAME: popcorn
+            ENQUEUE_DB_USER: popcorn
+            ENQUEUE_DB_PASSWORD: popcorn
+            ENQUEUE_DB_SERVER_VERSION: 10.11.8-MariaDB
+            PROM_METRICS_DSN: "redis://popcorn-server-redis:6379"
+            TOR_PROXY: "socks5h://popcorn-server-tor:9050"
+            TMDB_API_KEY: ${TMDB_API_KEY:-}
+            TRAKT_KEY: ${TRAKT_KEY:-}
+            SENTRY_DSN: ${SENTRY_DSN:-}
+        volumes:
+            - .:/app
+            - popcorn-server-vendor:/app/vendor
+            - popcorn-server-var:/app/var
+        networks:
+            - popcorn-server
+
+    popcorn-server-mariadb:
+        image: mariadb:10.11
+        ports:
+            - "${POPCORN_SERVER_DB_PORT:-13306}:3306"
+        environment:
+            MARIADB_DATABASE: popcorn
+            MARIADB_USER: popcorn
+            MARIADB_PASSWORD: popcorn
+            MARIADB_ROOT_PASSWORD: root
+        volumes:
+            - popcorn-server-mariadb:/var/lib/mysql
+        healthcheck:
+            test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        networks:
+            - popcorn-server
+
+    popcorn-server-redis:
+        image: redis:7-alpine
+        ports:
+            - "${POPCORN_SERVER_REDIS_PORT:-16379}:6379"
+        volumes:
+            - popcorn-server-redis:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - popcorn-server
+
+    popcorn-server-elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+        ports:
+            - "${POPCORN_SERVER_ELASTICSEARCH_PORT:-19200}:9200"
+        environment:
+            discovery.type: single-node
+            xpack.security.enabled: "false"
+            xpack.security.http.ssl.enabled: "false"
+            ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+        volumes:
+            - popcorn-server-elasticsearch:/usr/share/elasticsearch/data
+        healthcheck:
+            test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s >/dev/null"]
+            interval: 15s
+            timeout: 10s
+            retries: 20
+        networks:
+            - popcorn-server
+
+    popcorn-server-tor:
+        image: dperson/torproxy:latest
+        networks:
+            - popcorn-server
+
+    popcorn-server-adminer:
+        image: adminer:4
+        depends_on:
+            popcorn-server-mariadb:
+                condition: service_healthy
+        ports:
+            - "${POPCORN_SERVER_ADMINER_PORT:-18081}:8080"
+        environment:
+            ADMINER_DEFAULT_SERVER: popcorn-server-mariadb
+        networks:
+            - popcorn-server
+
+networks:
+    popcorn-server:
+        driver: bridge
+
+volumes:
+    popcorn-server-mariadb:
+        driver: local
+    popcorn-server-redis:
+        driver: local
+    popcorn-server-elasticsearch:
+        driver: local
+    popcorn-server-vendor:
+        driver: local
+    popcorn-server-var:
+        driver: local
